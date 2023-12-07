@@ -1,0 +1,16 @@
+name: thesis
+channels:
+	- defaults
+dependencies:
+	- python=3.9
+	- pyarrow
+	- pickle
+	- pandas
+	- numpy
+	- collections
+	- argparse
+	- matplotlib
+	- sklearn
+	- torch
+	- dateutil
+	- warnings
