@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import normalize
+import torch
 
 from preprocess_outputs import preprocess_crt_avpu
-from datasets import create_dataloaders
+from datasets import create_dataloaders, IMPALA_Dataset
 
 CLINICAL_DATA_PATH = '/DATA/Clean Data/IMPALA_Clinical_Data_202308211019_Raw.csv'
 CLINICAL_DTYPES_PATH = '/DATA/IMPALAclinicalstudy_Dictionary_2023-09-25.csv'
@@ -61,13 +62,18 @@ def split_per_dtype(c_df, d_dict):
     dtype_columns = {k : intersection(v, c_df.columns.to_list()) for k, v in d_dict.items()}
     dtype_df = {k : c_df[v] for k, v in dtype_columns.items()}
 
+
+    # 'recru_cr_time_result', 'dly_crt', 'dis_cr_time']] < 0] = np.nan
+    # df[df[['recru_avpu_score', 'dly_avpu
+
     return dtype_df
 
 
-def remove_columns(dtype_df, threshold):
+def remove_columns(dtype_df, threshold, args):
     """ Remove columns if the ratio of missing values exceeds the threshold. """
 
-    print(f"Remove columns if too many values are missing:")
+    if args.verbosity:
+        print(f"Remove columns if too many values are missing:")
 
     for type_, df in dtype_df.items():
         drop = []
@@ -78,7 +84,9 @@ def remove_columns(dtype_df, threshold):
 
                 drop.append(col)
         
-        print(f'{type_}: removed {len(drop)} columns')
+        if args.verbosity:
+            print(f'{type_}: removed {len(drop)} columns')
+
         dtype_df[type_] = dtype_df[type_].drop(drop, axis=1)
     
     return dtype_df
@@ -92,10 +100,11 @@ def split_text_data(dtype_df):
     dtype_df = dtype_df.copy()
 
     # Split numerical columns
-    num_df = dtype_df['text'].select_dtypes(include=['float64', 'int64'])
-    valid_num_columns = num_df.columns.to_list()
-    dtype_df['text'] = dtype_df['text'].drop(valid_num_columns, axis=1)
-    dtype_df['numerical'] = num_df
+    if 'num' not in dtype_df.keys():
+        num_df = dtype_df['text'].select_dtypes(include=['float64', 'int64'])
+        valid_num_columns = num_df.columns.to_list()
+        dtype_df['text'] = dtype_df['text'].drop(valid_num_columns, axis=1)
+        dtype_df['num'] = num_df
 
     # Split record_id
     if 'record_id' in dtype_df['text'].columns:
@@ -104,16 +113,17 @@ def split_text_data(dtype_df):
         dtype_df['record_id'] = record_id
 
     # Split date columns (columns handpicked)
-    date_df = dtype_df['text'].filter(
-        ["recru_interview_date_", "recru_hospital_admission_date",
-         "recru_hdu_admission_date", "recru_dob", "recru_bloodculture_time",
-         "recru_lactate_sample_time", "recru_storage_spec_time",
-         "recru_nasal_swab_time", "recru_urine_time", "dly_time",
-         "dly_time_new_cie1a", "dly_time_new_cie2", "dly_time_new_cie3",
-         "dly_time_new_cie4", "dly_time_new_cie5", "dly_time_new_cie6"])
-    
-    dtype_df['dates'] = date_df
-    dtype_df['text'] = dtype_df['text'].drop(date_df.columns, axis=1)
+    if 'dates' not in dtype_df.keys():
+        date_df = dtype_df['text'].filter(
+            ["recru_interview_date_", "recru_hospital_admission_date",
+            "recru_hdu_admission_date", "recru_dob", "recru_bloodculture_time",
+            "recru_lactate_sample_time", "recru_storage_spec_time",
+            "recru_nasal_swab_time", "recru_urine_time", "dly_time",
+            "dly_time_new_cie1a", "dly_time_new_cie2", "dly_time_new_cie3",
+            "dly_time_new_cie4", "dly_time_new_cie5", "dly_time_new_cie6"])
+        
+        dtype_df['dates'] = date_df
+        dtype_df['text'] = dtype_df['text'].drop(date_df.columns, axis=1)
 
     return dtype_df
 
@@ -276,9 +286,9 @@ def sliding_window_forward(data, outputs, datetimes, admission_dates, record_ids
     return X, y
 
 
-def main(args):
+def preprocessing(args):
     """
-    Preprocess the clinical dataset and turn it into PyTorch dataloaders.
+    Preprocess the clinical dataset.
     """
 
     ### 1. Load data ###
@@ -299,10 +309,21 @@ def main(args):
     dtype_df = split_per_dtype(clinical_df, dtype_dict) # Split data per datatype
 
     if args.threshold:
-        dtype_df = remove_columns(dtype_df, args.threshold) # Remove columns if too many missing values
+        dtype_df = remove_columns(dtype_df, args.threshold, args) # Remove columns if too many missing values
 
-    dtype_df['radio'] = one_hot_encoding(dtype_df['radio']) # Turn categorical columns to one-hot encoding
     dtype_df = split_text_data(dtype_df) # Split text data further
+
+    # Remove CRT and AVPU columns
+    filter_ = dtype_df['radio'].filter(['recru_avpu_score', 'dly_avpu'])
+    dtype_df['radio'] = dtype_df['radio'].drop(filter_, axis=1)
+    filter_ = dtype_df['num'].filter(['recru_cr_time_result', 'dly_crt'])
+    dtype_df['num'] = dtype_df['num'].drop(filter_, axis=1)
+
+    # Add hour of the day to the data
+    dtype_df['num'].insert(0, 'dly_hour', pd.to_datetime(dtype_df['dates']['dly_time'], format='mixed').round('h').dt.hour)
+
+    # Turn categorical columns to one-hot encoding
+    dtype_df['radio'] = one_hot_encoding(dtype_df['radio'])
 
     numerical_dtypes = ['radio', 'yesno', 'checkbox', 'calc', 'numerical']
     string_dtypes = ['text', 'record_id', 'dates']
@@ -326,11 +347,31 @@ def main(args):
                                    dtype_df['record_id'].to_frame(),
                                    args.window_size)
     
-    print(f"Input shape: {X.shape}\noutput shape: {y.shape}")
-    
-    ### 5. Load data into dataloaders ###
+    if args.verbosity:
+        print("\n=== Data statistics ===")
+        print(f"Input shape: {X.shape}\noutput shape: {y.shape}\n")
+
+    return X, y
+
+
+def main(args):
+    """
+    Check if dataset already exists, otherwise start preprocessing process.
+    NOTE: Loading dataset only requires filename, not path.
+    """
+
+    if args.saved_dataset and os.path.exists(f"{os.getcwd()}/DATA/Datasets/{args.filename}"):
+        print("Loading dataset...")
+        clinical_dataset = torch.load(f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+
+    else:
+        print("Start propressing data...")
+        X, y = preprocessing(args)
+        clinical_dataset = IMPALA_Dataset(X, y)
+        torch.save(clinical_dataset, f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+
     train_dataloader, val_dataloader, test_dataloader = \
-        create_dataloaders(X, y, batch_size=args.batch_size, seed=args.seed)
+        create_dataloaders(clinical_dataset, batch_size=args.batch_size)
 
     return train_dataloader, val_dataloader, test_dataloader
 
@@ -338,8 +379,14 @@ def main(args):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--verbosity", action="store_true",
+                        help="if set, print information regarding the data")
     parser.add_argument("--pca", action="store_true",
                         help="if set, prinicipal component analysis will be performed")
+    parser.add_argument("--saved_dataset", action="store_true",
+                        help="if set, use saved preprocessed dataset (if file exists)")
+    parser.add_argument("--filename", action="store", type=str,
+                        help="filename of dataset to be saved or loaded")
     parser.add_argument("-w", "--window_size", type=int, required=True, action="store",
                         help="set the size of the sliding windows (required)")
     parser.add_argument("-bs", "--batch_size", type=int, required=True, action="store",
@@ -352,7 +399,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     train_dataloader, val_dataloader, test_dataloader = main(args)
-
-    
-
-

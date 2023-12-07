@@ -27,9 +27,8 @@ def calculate_hrv(data, return_features=None, verbose=False):
     """
 
     # Convert heart rate per minute to RR intervals in milliseconds
-    rr_intervals =  (60 / data) * 1000
-    print(len(rr_intervals))
-    print(rr_intervals[:20])
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rr_intervals =  (60 / data) * 1000
 
     # This remove outliers from signal (low_rri = 250 HR, high_rri = 30 HR)
     rr_intervals_without_outliers = remove_outliers(rr_intervals=rr_intervals,  
@@ -49,8 +48,6 @@ def calculate_hrv(data, return_features=None, verbose=False):
 
     # If there are still nan values, drop them
     interpolated_nn_intervals = [x for x in interpolated_nn_intervals if x == x]
-    print(len(interpolated_nn_intervals))
-    print(interpolated_nn_intervals[:20])
 
     # If all entries were nan, return immediatelly
     if interpolated_nn_intervals == []:

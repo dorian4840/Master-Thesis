@@ -131,8 +131,8 @@ def read_raw_vital_signs(path: str, batch_size=10000, n_batches=None, patient_id
         if n_batches and i > n_batches:
             break
 
-        if i % 1000 == 0:
-            print(f"Batch {i}")
+        # if i % 1000 == 0:
+        #     print(f"Batch {i}")
 
         if patient_id and type(patient_id) == str:
             if patient_id in batch['patient_id'].tolist():

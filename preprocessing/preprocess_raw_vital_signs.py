@@ -4,12 +4,12 @@ import pandas as pd
 import numpy as np
 from dateutil.rrule import rrule, SECONDLY, MINUTELY, HOURLY
 import warnings
-from itertools import product
+import torch
 
 from heart_rate_variability import apply_hrv
 from load_raw_vital_signs import *
 from preprocess_outputs import preprocess_crt_avpu
-from datasets import create_dataloaders
+from datasets import create_dataloaders, IMPALA_Dataset
 
 RAW_VITAL_DATA_PATH = "/DATA/Raw Data/filtered_df_removed_nan_files.parquet"
 CLINICAL_DATA_PATH = "/DATA/Clean Data/IMPALA_Clinical_Data_202308211019_Raw.csv"
@@ -150,12 +150,21 @@ def sliding_window_backward(data, outputs, datetimes, sample_window_hours):
     return X, y
 
 
-def main(args):
+def list_of_strings(arg):
+    return [s.strip() for s in arg.split(',')]
+
+
+def preprocessing(args):
     """
     Preprocess the raw vital sign data.
     """
 
-    data = load_patient_dict(os.getcwd() + PROCESSED_RAW_VITAL_SIGN_DATA_PATH)
+    ### 1. Loading data
+    if args.test:
+        data = load_patient_dict(os.getcwd() + PROCESSED_RAW_VITAL_SIGN_DATA_PATH)
+    else:
+        data = read_raw_vital_signs(os.getcwd() + RAW_VITAL_DATA_PATH)
+    
     outputs = preprocess_crt_avpu(os.getcwd() + CLINICAL_DATA_PATH)
     age_dict = get_age_in_months(os.getcwd() + CLINICAL_DATA_PATH)
 
@@ -163,18 +172,18 @@ def main(args):
 
     for patient_id, df in data.items():
 
-        ### 1. Split data into windows ###
-        df = data['Z-H-0120'].drop(['patient_id', 'location'], axis=1)
+        ### 2. Split data into windows ###
+        df = data[patient_id].drop(['patient_id', 'location'], axis=1)
         df = df.sort_values('datetime')
         windows, datetimes = split_data_into_window(df, time_unit='m', time_freq=15)
 
-        ### 2. Transform windows
+        ### 3. Transform windows
         agg_data = aggregate_windows(windows) # Aggragate over windows
         hrv_data = apply_hrv(windows, return_features=args.hrv) # Calculate HRV
         age_data = (np.ones((agg_data.shape[0], 1)) * age_dict[patient_id]) # Add age
         new_data = np.concatenate((agg_data, hrv_data, age_data), axis=1)
 
-        ### 3. Apply sliding window
+        ### 4. Apply sliding window
         temp_X, temp_y = sliding_window_backward(new_data, outputs[patient_id],
                                                  datetimes, args.window_size)
         X.append(temp_X)
@@ -188,23 +197,48 @@ def main(args):
     y = np.array(y) # Shape: samples, dimensions
 
     if args.verbosity:
+        print("=== Data statistics ===")
+        print(f"Input shape: {X.shape}\noutput shape: {y.shape}")
+
+        unique, counts = np.unique(X, return_counts=True)
+        print(round((dict(zip(unique, counts))[-999] / X.size) * 100, 3),
+              "%", "of the data is missing")
+        unique, counts = np.unique(X[:, 20:-1, :], return_counts=True)
+        print(round((dict(zip(unique, counts))[-999] / X.size) * 100, 3),
+              "%", "of missing data is from hrv analysis\n")
+
         features = ["ECGHR_mean,", "ECGRR_mean,", "SPO2HR_mean,", "SPO2_mean,\n",
                     "ECGHR_min,", "ECGRR_min,", "SPO2HR_min,", "SPO2_min,\n",
                     "ECGHR_max,", "ECGRR_max,", "SPO2HR_max,", "SPO2_max,\n",
-                    "ECGHR_std,", "ECGRR_std,", "SPO2HR_std,", "SPO2_std,\n"]
+                    "ECGHR_std,", "ECGRR_std,", "SPO2HR_std,", "SPO2_std,\n",
+                    "NIBP_lower,", "NIBP_upper,", "NIBP_mean,", "Hour,\n"]
+
         print("=== Input features ===\n", *features, *args.hrv, "Age\n")
         print("=== Output features ===\n CRT, AVPU\n")
-        print(f"Input shape: {X.shape}\noutput shape: {y.shape}")
+    
+    return X, y
 
-    ### 4. Load data into dataloaders ###
+
+def main(args):
+    """
+    Check if dataset already exists, otherwise start preprocessing process.
+    NOTE: Loading dataset only requires filename, not path.
+    """
+
+    if args.saved_dataset and os.path.exists(f"{os.getcwd()}/DATA/Datasets/{args.filename}"):
+        print("Loading dataset...")
+        vital_sign_dataset = torch.load(f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+
+    else:
+        print("Start propressing data...")
+        X, y = preprocessing(args)
+        vital_sign_dataset = IMPALA_Dataset(X, y)
+        torch.save(vital_sign_dataset, f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+
     train_dataloader, val_dataloader, test_dataloader = \
-        create_dataloaders(X, y, batch_size=args.batch_size, seed=args.seed)
+        create_dataloaders(vital_sign_dataset, batch_size=args.batch_size)
     
     return train_dataloader, val_dataloader, test_dataloader
-
-
-def list_of_strings(arg):
-    return [s.strip() for s in arg.split(',')]
 
 
 if __name__ == "__main__":
@@ -212,12 +246,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbosity", action="store_true",
                         help="if set, print information regarding the data")
+    parser.add_argument("--saved_dataset", action="store_true",
+                        help="if set, use saved preprocessed dataset (if file exists)")
+    parser.add_argument("--test", action="store_true",
+                        help="if set, use pre-saved vital sign data of only 30 patients")
+    parser.add_argument("--filename", action="store", type=str,
+                        help="filename of dataset to be saved or loaded")
     parser.add_argument("-w", "--window_size", type=int, required=True, action="store",
                         help="set the size of the sliding windows (required)")
     parser.add_argument("-bs", "--batch_size", type=int, required=True, action="store",
                         help="set the batch size of the dataloaders (required)")
-    parser.add_argument("-s", "--seed", type=int, required=True, action="store",
-                        help="set the seed of the dataloaders (required)")
+    # parser.add_argument("-s", "--seed", type=int, required=True, action="store",
+    #                     help="set the seed of the dataloaders (required)")
     parser.add_argument("--hrv", type=list_of_strings, required=True, action="store",
                         help="list the hrv features to be calculated (default: lfnu)")
     
