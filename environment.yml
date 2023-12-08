@@ -1,16 +1,12 @@
-name: thesis
+name: test
 channels:
-	- defaults
+- defaults
+- conda-forge
+- pip
 dependencies:
-	- python=3.9
-	- pyarrow
-	- pickle
-	- pandas
-	- numpy
-	- collections
-	- argparse
-	- matplotlib
-	- sklearn
-	- torch
-	- dateutil
-	- warnings
+- python=3.9
+- pyarrow
+- pandas
+- numpy
+- matplotlib
+- scikit-learn
