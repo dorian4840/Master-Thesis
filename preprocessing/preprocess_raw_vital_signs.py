@@ -11,9 +11,9 @@ from load_raw_vital_signs import *
 from preprocess_outputs import preprocess_crt_avpu
 from datasets import create_dataloaders, IMPALA_Dataset
 
-RAW_VITAL_DATA_PATH = "/DATA/Raw Data/filtered_df_removed_nan_files.parquet"
-CLINICAL_DATA_PATH = "/DATA/Clean Data/IMPALA_Clinical_Data_202308211019_Raw.csv"
-PROCESSED_RAW_VITAL_SIGN_DATA_PATH = "/DATA/Raw Data/raw_patient_dict_p30"
+RAW_VITAL_DATA_PATH = "/Raw Data/filtered_df_removed_nan_files.parquet"
+CLINICAL_DATA_PATH = "/Clean Data/IMPALA_Clinical_Data_202308211019_Raw.csv"
+PROCESSED_RAW_VITAL_SIGN_DATA_PATH = "/Raw Data/raw_patient_dict_p30"
 
 
 def get_age_in_months(path):
@@ -161,12 +161,12 @@ def preprocessing(args):
 
     ### 1. Loading data
     if args.test:
-        data = load_patient_dict(os.getcwd() + PROCESSED_RAW_VITAL_SIGN_DATA_PATH)
+        data = load_patient_dict(args.data_path + PROCESSED_RAW_VITAL_SIGN_DATA_PATH)
     else:
-        data = read_raw_vital_signs(os.getcwd() + RAW_VITAL_DATA_PATH)
+        data = read_raw_vital_signs(args.data_path + RAW_VITAL_DATA_PATH)
     
-    outputs = preprocess_crt_avpu(os.getcwd() + CLINICAL_DATA_PATH)
-    age_dict = get_age_in_months(os.getcwd() + CLINICAL_DATA_PATH)
+    outputs = preprocess_crt_avpu(args.data_path + CLINICAL_DATA_PATH)
+    age_dict = get_age_in_months(args.data_path + CLINICAL_DATA_PATH)
 
     X, y = [], []
 
@@ -239,15 +239,15 @@ def main(args):
     NOTE: Loading dataset only requires filename, not path.
     """
 
-    if args.saved_dataset and os.path.exists(f"{os.getcwd()}/DATA/Datasets/{args.filename}"):
+    if args.saved_dataset and os.path.exists(f"{args.data_path}/Datasets/{args.filename}"):
         print("Loading dataset...")
-        vital_sign_dataset = torch.load(f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+        vital_sign_dataset = torch.load(f"{args.data_path}/Datasets/{args.filename}")
 
     else:
         print("Start preprocessing data...")
         X, y = preprocessing(args)
         vital_sign_dataset = IMPALA_Dataset(X, y)
-        torch.save(vital_sign_dataset, f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+        torch.save(vital_sign_dataset, f"{args.data_path}/Datasets/{args.filename}")
 
     train_dataloader, val_dataloader, test_dataloader = \
         create_dataloaders(vital_sign_dataset, batch_size=args.batch_size)
@@ -274,7 +274,9 @@ if __name__ == "__main__":
     #                     help="set the seed of the dataloaders (required)")
     parser.add_argument("--hrv", type=list_of_strings, action="store",
                         help="list the hrv features to be calculated (default: lfnu)")
-    
+    parser.add_argument("-d", "--data_path", type=str, required=True, action="store",
+                        help="set path to data directory (required)")
+
     args = parser.parse_args()
 
     train_dataloader, val_dataloader, test_dataloader = main(args)
