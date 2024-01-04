@@ -179,9 +179,12 @@ def preprocessing(args):
 
         ### 3. Transform windows
         agg_data = aggregate_windows(windows) # Aggragate over windows
-        hrv_data = apply_hrv(windows, return_features=args.hrv) # Calculate HRV
         age_data = (np.ones((agg_data.shape[0], 1)) * age_dict[patient_id]) # Add age
-        new_data = np.concatenate((agg_data, hrv_data, age_data), axis=1)
+        new_data = np.concatenate((agg_data, age_data), axis=1)
+
+        if args.hrv:
+            hrv_data = apply_hrv(windows, return_features=args.hrv) # Calculate HRV
+            new_data = np.concatenate((new_data, hrv_data), axis=1)
 
         ### 4. Apply sliding window
         temp_X, temp_y = sliding_window_backward(new_data, outputs[patient_id],
@@ -197,24 +200,35 @@ def preprocessing(args):
     y = np.array(y) # Shape: samples, dimensions
 
     if args.verbosity:
+        features = ["ECGHR_mean", "ECGRR_mean", "SPO2HR_mean", "SPO2_mean",
+                    "ECGHR_min", "ECGRR_min", "SPO2HR_min", "SPO2_min",
+                    "ECGHR_max", "ECGRR_max", "SPO2HR_max", "SPO2_max",
+                    "ECGHR_std", "ECGRR_std", "SPO2HR_std", "SPO2_std",
+                    "NIBP_lower", "NIBP_upper", "NIBP_mean", "Hour",
+                    "Age"]
+        
+        if args.hrv:
+            features.append(*args.hrv)
+
         print("=== Data statistics ===")
-        print(f"Input shape: {X.shape}\noutput shape: {y.shape}")
+        print(f" Input shape: {X.shape}\n output shape: {y.shape}")
 
-        unique, counts = np.unique(X, return_counts=True)
-        print(round((dict(zip(unique, counts))[-999] / X.size) * 100, 3),
-              "%", "of the data is missing")
-        unique, counts = np.unique(X[:, 20:-1, :], return_counts=True)
-        print(round((dict(zip(unique, counts))[-999] / X.size) * 100, 3),
-              "%", "of missing data is from hrv analysis\n")
+        a = np.argwhere(X == -999)
+        u, c = np.unique(a[:, 1], return_counts=True)
+        perc = (c / (X.shape[0] * X.shape[2])) * 100
 
-        features = ["ECGHR_mean,", "ECGRR_mean,", "SPO2HR_mean,", "SPO2_mean,\n",
-                    "ECGHR_min,", "ECGRR_min,", "SPO2HR_min,", "SPO2_min,\n",
-                    "ECGHR_max,", "ECGRR_max,", "SPO2HR_max,", "SPO2_max,\n",
-                    "ECGHR_std,", "ECGRR_std,", "SPO2HR_std,", "SPO2_std,\n",
-                    "NIBP_lower,", "NIBP_upper,", "NIBP_mean,", "Hour,\n"]
+        print("\n Missing data per feature (%):")
+        j = 0
+        max_len = max(len(f) for f in features)
+        for i, name in enumerate(features):
+            if i in u:
+                print(f" {name}{' '*(max_len-len(name))} : {round(perc[j], 2)}%")
+                j += 1
+            else:
+                print(f" {name}{' '*(max_len-len(name))} : 0.00%")
 
-        print("=== Input features ===\n", *features, *args.hrv, "Age\n")
-        print("=== Output features ===\n CRT, AVPU\n")
+        print("\n=== Input features ===\n", *features)
+        print("\n=== Output features ===\n CRT, AVPU\n")
     
     return X, y
 
@@ -230,7 +244,7 @@ def main(args):
         vital_sign_dataset = torch.load(f"{os.getcwd()}/DATA/Datasets/{args.filename}")
 
     else:
-        print("Start propressing data...")
+        print("Start preprocessing data...")
         X, y = preprocessing(args)
         vital_sign_dataset = IMPALA_Dataset(X, y)
         torch.save(vital_sign_dataset, f"{os.getcwd()}/DATA/Datasets/{args.filename}")
@@ -258,7 +272,7 @@ if __name__ == "__main__":
                         help="set the batch size of the dataloaders (required)")
     # parser.add_argument("-s", "--seed", type=int, required=True, action="store",
     #                     help="set the seed of the dataloaders (required)")
-    parser.add_argument("--hrv", type=list_of_strings, required=True, action="store",
+    parser.add_argument("--hrv", type=list_of_strings, action="store",
                         help="list the hrv features to be calculated (default: lfnu)")
     
     args = parser.parse_args()

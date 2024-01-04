@@ -28,7 +28,7 @@ def calculate_hrv(data, return_features=None, verbose=False):
 
     # Convert heart rate per minute to RR intervals in milliseconds
     with np.errstate(divide='ignore', invalid='ignore'):
-        rr_intervals =  (60 / data) * 1000
+        rr_intervals = (60 / data) * 1000
 
     # This remove outliers from signal (low_rri = 250 HR, high_rri = 30 HR)
     rr_intervals_without_outliers = remove_outliers(rr_intervals=rr_intervals,  
