@@ -7,3 +7,5 @@ __pycache__/
 DATA/
 RESULTS/
 Experiments/
+models/saved_models/
+models/stats_models/

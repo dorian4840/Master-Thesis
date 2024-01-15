@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import normalize
+from sklearn.preprocessing import normalize, StandardScaler
 import torch
 
 from preprocess_outputs import preprocess_crt_avpu
@@ -187,7 +187,7 @@ def perform_PCA(data, visualize=False):
     return new_data
 
 
-### Sliding windpw
+### Sliding window
 def sliding_window_backward(data, outputs, datetimes, admission_dates, record_ids, sample_window_hours):
     """
     Apply a sliding window over the given data. If a window is too long, the first
@@ -328,7 +328,11 @@ def preprocessing(args):
     numerical_dtypes = ['radio', 'yesno', 'checkbox', 'calc', 'numerical']
     string_dtypes = ['text', 'record_id', 'dates']
     numerical_data = np.concatenate(([v for k, v in dtype_df.items() if k in numerical_dtypes]), axis=1)
-    data = normalize(numerical_data, axis=0) # Normalize data
+    
+    numerical_data = np.where(numerical_data == -1, np.nan, numerical_data)
+    data = StandardScaler().fit_transform(numerical_data)
+    data = np.nan_to_num(data, nan=-1)
+    # data = normalize(numerical_data, axis=0) # Normalize data
 
     ### 3. Perform Principal component analysis ###
     if args.pca:
@@ -349,7 +353,7 @@ def preprocessing(args):
     
     if args.verbosity:
         print("\n=== Data statistics ===")
-        print(f"Input shape: {X.shape}\noutput shape: {y.shape}\n")
+        print(f"Input shape: {X.shape}\nOutput shape: {y.shape}\n")
 
     return X, y
 
@@ -360,16 +364,19 @@ def main(args):
     NOTE: Loading dataset only requires filename, not path.
     """
 
-    if args.saved_dataset and os.path.exists(f"{os.getcwd()}/DATA/Datasets/{args.filename}"):
+    file_path = f"{os.getcwd()}/DATA/Datasets/{args.filename}"
+    if args.saved_dataset:# and os.path.exists(f"{os.getcwd()}/DATA/Datasets/{args.filename}"):
         print("Loading dataset...")
-        clinical_dataset = torch.load(f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+        X = torch.load(f"{file_path}_input")
+        y = torch.load(f"{file_path}_labels")
 
     else:
         print("Start propressing data...")
         X, y = preprocessing(args)
-        clinical_dataset = IMPALA_Dataset(X, y)
-        torch.save(clinical_dataset, f"{os.getcwd()}/DATA/Datasets/{args.filename}")
+        torch.save(X, f"{file_path}_input")
+        torch.save(y, f"{file_path}_labels")
 
+    clinical_dataset = IMPALA_Dataset(file_path)
     train_dataloader, val_dataloader, test_dataloader = \
         create_dataloaders(clinical_dataset, batch_size=args.batch_size)
 

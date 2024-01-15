@@ -6,7 +6,7 @@ from dateutil.rrule import rrule, SECONDLY, MINUTELY, HOURLY
 import warnings
 import torch
 
-from heart_rate_variability import apply_hrv
+# from heart_rate_variability import apply_hrv
 from load_raw_vital_signs import *
 from preprocess_outputs import preprocess_crt_avpu
 from datasets import create_dataloaders, IMPALA_Dataset
@@ -170,7 +170,16 @@ def preprocessing(args):
 
     X, y = [], []
 
-    for patient_id, df in data.items():
+    for i, (patient_id, df) in enumerate(data.items()):
+        print(i)
+
+        if patient_id not in age_dict or patient_id not in outputs:
+            print(f"Patient {patient_id} not found in data...")
+            continue
+
+        if df.empty:
+            print(f"Patient {patient_id} has no data...")
+            continue
 
         ### 2. Split data into windows ###
         df = data[patient_id].drop(['patient_id', 'location'], axis=1)
@@ -239,16 +248,22 @@ def main(args):
     NOTE: Loading dataset only requires filename, not path.
     """
 
-    if args.saved_dataset and os.path.exists(f"{args.data_path}/Datasets/{args.filename}"):
+    file_path = f"{os.getcwd()}/DATA/Datasets/{args.filename}"
+    if args.saved_dataset:# and os.path.exists(f"{args.data_path}/Datasets/{args.filename}"):
         print("Loading dataset...")
-        vital_sign_dataset = torch.load(f"{args.data_path}/Datasets/{args.filename}")
+        X = torch.load(f"{file_path}_input")
+        y = torch.load(f"{file_path}_labels")
+        # vital_sign_dataset = torch.load(f"{args.data_path}/Datasets/{args.filename}")
 
     else:
         print("Start preprocessing data...")
         X, y = preprocessing(args)
-        vital_sign_dataset = IMPALA_Dataset(X, y)
-        torch.save(vital_sign_dataset, f"{args.data_path}/Datasets/{args.filename}")
+        torch.save(X, f"{file_path}_input")
+        torch.save(y, f"{file_path}_labels")
+        # vital_sign_dataset = IMPALA_Dataset(X, y)
+        # torch.save(vital_sign_dataset, f"{args.data_path}/Datasets/{args.filename}")
 
+    vital_sign_dataset = IMPALA_Dataset(X, y)
     train_dataloader, val_dataloader, test_dataloader = \
         create_dataloaders(vital_sign_dataset, batch_size=args.batch_size)
     
