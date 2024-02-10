@@ -1,0 +1,6 @@
+{
+	"name": "LSTM_vital_w_12",
+	"hidden_size": 512,
+	"num_layers": 4,
+	"dropout": 0
+}

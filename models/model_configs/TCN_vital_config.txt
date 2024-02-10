@@ -1,0 +1,16 @@
+{
+	"name": "TCN_vital_w_12",
+	"num_channels": [400, 300, 200, 200, 100, 100],
+	"kernel_size": 5,
+	"dilations": null,
+	"dilation_reset": 8,
+	"dropout": 0,
+	"causal": true,
+	"use_norm": "weight_norm",
+	"activation": "tanh",
+	"kernel_initializer": "xavier_uniform",
+	"use_skip_connections": false,
+	"input_shape": "NLC",
+	"hidden_dims": [],
+	"final_activation": "softmax"
+}

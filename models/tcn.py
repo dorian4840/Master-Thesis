@@ -9,25 +9,15 @@ class TCN(nn.Module):
     output to a desired length.
     """
 
-    def __init__(self,
-                 num_input,
-                 num_timesteps,
-                 num_channels,
-                 kernel_size,
-                 dilations=None,
-                 dilation_reset=None,
-                 dropout=0,
-                 causal=False,
-                 use_norm='weight_norm',
-                 activation='relu',
-                 kernel_initializer='xavier_uniform',
-                 use_skip_connections=False,
-                 input_shape='NCL',
-                 hidden_dims=[500],
-                 num_output=2):
+    def __init__(self, name, num_input, num_timesteps, num_channels, kernel_size,
+                 dilations=None, dilation_reset=None, dropout=0, causal=False,
+                 use_norm='weight_norm', activation='relu', kernel_initializer='xavier_uniform',
+                 use_skip_connections=False, input_shape='NCL', hidden_dims=[],
+                 num_output=[4, 7], final_activation='sigmoid'):
 
         super(TCN, self).__init__()
 
+        self.name = name
         self.layers = []
 
         # TCN model
@@ -59,12 +49,23 @@ class TCN(nn.Module):
             self.layers.append(nn.ReLU())
             output_dims = hidden
 
-        linear = nn.Linear(output_dims, num_output)
-        nn.init.xavier_uniform_(linear.weight, gain=nn.init.calculate_gain('sigmoid'))
-        linear.bias.data.fill_(0.01) # NOTE: Gewoon gevonden online!!!
+        # Output layer for the AVPU
+        self.linearavpu = nn.Linear(output_dims, num_output[0])
+        nn.init.xavier_uniform_(self.linearavpu.weight, gain=nn.init.calculate_gain('sigmoid'))
+        self.linearavpu.bias.data.fill_(0.01) # NOTE: Gewoon gevonden online!!!
 
-        self.layers.append(linear)
-        self.layers.append(nn.Sigmoid())
+        # Output layer for the CRT
+        self.linearcrt = nn.Linear(output_dims, num_output[1])
+        nn.init.xavier_uniform_(self.linearcrt.weight, gain=nn.init.calculate_gain('sigmoid'))
+        self.linearcrt.bias.data.fill_(0.01) # NOTE: Gewoon gevonden online!!!
+
+        if final_activation == 'sigmoid':
+            self.act_func = nn.Sigmoid()
+        elif final_activation == 'softmax':
+            self.act_func = nn.Softmax(dim=-1)
+        else:
+            raise ValueError(f'{final_activation} not a valid final activation function')
+
         self.layers = nn.Sequential(*self.layers)
 
 
@@ -75,35 +76,16 @@ class TCN(nn.Module):
         """
 
         out = self.layers(x)
-        return out
+        out_avpu = self.act_func(self.linearavpu(out))
+        out_crt = self.act_func(self.linearcrt(out))
+
+        return out_avpu, out_crt
+    
+    def device(self):
+        """ Return the device the model is currently on. """
+        return next(self.parameters()).device
 
 
-
-# data = torch.rand((16, 454, 4))
-
-# model = TCN(
-#     num_input=454,
-#     num_timesteps=4,
-#     num_channels=[250, 100, 50],
-#     kernel_size=2,
-#     dilations=[1, 2, 4],
-#     dilation_reset=None,
-#     dropout=0.2,
-#     causal=True,
-#     use_norm='weight_norm',
-#     activation='relu',
-#     kernel_initializer='xavier_uniform',
-#     use_skip_connections=False,
-#     input_shape='NCL',
-#     hidden_dims=[100, 25],
-#     num_output=2
-# )
-
-# print(model)
-
-# print(data.shape)
-# out = model(data)
-# print(out[0])
 
 # model = pytcn.TCN(num_inputs=10,        # Equal to num input features
 #                   num_channels=[15, 15, 15],    # Must match number of dilations
@@ -117,4 +99,23 @@ class TCN(nn.Module):
 #                   kernel_initializer='xavier_uniform',
 #                   use_skip_connections=False,   # from WaveNet architecture
 #                   input_shape='NCL')    # Batch size, features, time
-
+    
+# def __init__(self,
+#                  name,
+#                  num_input,
+#                  num_timesteps,
+#                  num_channels,
+#                  kernel_size,
+#                  dilations=None,
+#                  dilation_reset=None,
+#                  dropout=0,
+#                  causal=False,
+#                  use_norm='weight_norm',
+#                  activation='relu',
+#                  kernel_initializer='xavier_uniform',
+#                  use_skip_connections=False,
+#                  input_shape='NCL',
+#                  hidden_dims=[500],
+#                  num_output=2,
+#                  final_activation='sigmoid',
+#                  device='cpu',):

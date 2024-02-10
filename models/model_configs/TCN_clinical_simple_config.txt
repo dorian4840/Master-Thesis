@@ -1,0 +1,16 @@
+{
+	"name": "TCN_clinical_w_14",
+	"num_channels": [400, 200, 100],
+	"kernel_size": 3,
+	"dilations": [1, 2, 3],
+	"dilation_reset": 3,
+	"dropout": 0,
+	"causal": true,
+	"use_norm": "weight_norm",
+	"activation": "tanh",
+	"kernel_initializer": "xavier_uniform",
+	"use_skip_connections": false,
+	"input_shape": "NLC",
+	"hidden_dims": [],
+	"final_activation": "softmax"
+}

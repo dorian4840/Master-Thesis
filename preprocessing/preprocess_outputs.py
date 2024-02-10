@@ -68,17 +68,14 @@ def get_outputs(df):
         out = out.sort_index()
 
         # Remove rows where all entries are missing
-        out = out.loc[out[['avpu', 'crt']].dropna(how='all').index]
+        out = out.loc[out[['avpu', 'crt']].dropna(how='any').index]
 
         output_dict[record_id] = out
-        del record_id, patient_df
-
-    del df
 
     return output_dict
 
 
-def preprocess_crt_avpu(path='./DATA/Clean Data/IMPALA_Clinical_Data_202308211019_Raw.csv'):
+def preprocess_crt_avpu(path):
     """
     Load the clinical data, extract the CRT and AVPU and collect the data in a
     Python dictionary.

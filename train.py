@@ -1,23 +1,30 @@
 import os
 import argparse
 import warnings
+import json
+from tqdm import tqdm
 import numpy as np
+from copy import deepcopy
+import matplotlib.pyplot as plt
+import pandas as pd
+import pickle
+
 import torch
 from torch import nn
-from sklearn.metrics import accuracy_score, precision_score, recall_score, \
-                            confusion_matrix, f1_score
-from copy import deepcopy
-import pickle
-from tqdm import tqdm
-import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import StepLR
 
-from models.tcn_bai_torch import TCN
-from preprocessing.datasets import IMPALA_Dataset, create_dataloaders
+from datasets import create_dataloaders
+from models.lstm import LSTM
+from models.tcn import TCN
+from models.linear import Linear
+from metrics import *
+
+MISSING = -1
 
 
 def set_seed(seed):
     """
-    Function for setting the seed for reproducibility.
+    Set a seed for reproducibility.
     """
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -28,41 +35,202 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def load_model(args, num_input, num_timesteps, num_output):
+def data_augmentations(data):
     """
-    Load the Temporal Convolutional Network based on Bai et al.
-    https://arxiv.org/pdf/1803.01271.pdf
-
-    Model is modified to with extra linear layers at the end to flatten the output
-    of the TCN and get the output to a desired length.
+    Perform data augmentations on the in and output data.
     """
 
-    model = TCN(
-        num_input=num_input,
-        num_timesteps=num_timesteps,
-        num_channels=[250, 100, 50],
-        kernel_size=3,
-        dilations=[1, 2, 3],
-        dilation_reset=3,
-        dropout=0.2,
-        causal=True,
-        use_norm='weight_norm',
-        activation='relu',
-        kernel_initializer='xavier_uniform',
-        use_skip_connections=False,
-        input_shape='NCL',
-        hidden_dims=[100, 25],
-        num_output=num_output
-    )
+    for patient_id, patient_data in data.items():
+
+        # Augment input
+        X = patient_data['X']
+        X = np.where(np.isnan(X), -1, X)
+        data[patient_id]['X'] = X
+
+        # Augment output
+        y = patient_data['y']
+        # Cast CRT values > 6 to 6
+        y[:, 1] = np.where(y[:, 1] > 6, 6, y[:, 1])
+        y = y.round()
+        y = y.astype(int)
+
+        # Turn labels to one-hot encoding
+        labels_avpu = np.zeros((y.shape[0], 4))
+        labels_avpu[range(labels_avpu.shape[0]), y[:, 0]-1] = 1
+        labels_crt = np.zeros((y.shape[0], 7))
+        labels_crt[range(labels_crt.shape[0]), y[:, 1]] = 1
+
+        data[patient_id]['y'] = [labels_avpu, labels_crt]
+
+    return data
+
+
+def calculate_loss_weights(args, data):
+    """
+    Calculate the frequency per output class. This weight will be used in the
+    loss functions to account for an imbalanced dataset. If a class is not
+    encountered in the dataset, replace weights with 1000.
+
+    TODO:
+    - laat werken voor binary
+    """
+
+    weights_avpu, weights_crt = np.zeros(4), np.zeros(7)
+
+    for d in data.values():
+        avpu, crt = d['y'][0], d['y'][1]
+
+        u, c = np.unique(np.argmax(avpu, axis=1), return_counts=True)
+        weights_avpu[u] += c
+
+        u, c = np.unique(np.argmax(crt, axis=1), return_counts=True)
+        weights_crt[u] += c
+
+    with np.errstate(divide='ignore'):
+        max_avpu = max(weights_avpu)
+        weights_avpu = max_avpu / weights_avpu
+        weights_avpu[weights_avpu == np.inf] = np.mean([w for w in weights_avpu if w < 10000])
+
+        max_crt = max(weights_crt)
+        weights_crt = max_crt / weights_crt
+        weights_crt[weights_crt == np.inf] = np.mean([w for w in weights_crt if w < 10000])
+
+    return torch.Tensor(weights_avpu), torch.Tensor(weights_crt)
+
+
+def load_data(args, data_split=[0.7, 0.1, 0.2]):
+    """
+    Load the dataset, perform data augmentations on it and create dataloaders.
+    """
+
+    with open(os.getcwd() + args.data_path, 'rb') as file:
+        data = pickle.load(file)
+
+    data = data_augmentations(data)
+
+    input_shape = data[list(data.keys())[0]]['X'].shape
+    n_features, n_timesteps = input_shape[2], input_shape[1]
+    loss_weights = calculate_loss_weights(args, data)
+
+    return create_dataloaders(data, data_split, args.batch_size), \
+        n_features, n_timesteps, loss_weights
+
+
+def load_model(args, n_features, n_timesteps):
+
+    with open(os.getcwd() + args.config_file) as file:
+        config = json.loads(file.read())
+
+    if args.model == 'lstm':
+        model = LSTM(name=config['name'],
+                     num_input=n_features,
+                     hidden_size=config['hidden_size'],
+                     num_layers=config['num_layers'],
+                     num_output=[4, 7],
+                     dropout=config['dropout'],
+                     final_activation='softmax')
+
+    elif args.model == 'tcn':
+
+        # As to avoid deprecation warning from pytorch_tcn TCN
+        warnings.filterwarnings("ignore", category=UserWarning)
+
+        model = TCN(
+            name=config['name'],
+            num_input=n_features,
+            num_timesteps=n_timesteps,
+            num_channels=config['num_channels'],
+            kernel_size=config['kernel_size'],
+            dilations=config['dilations'],
+            dilation_reset=config['dilation_reset'],
+            dropout=config['dropout'],
+            causal=config['causal'],
+            use_norm=config['use_norm'],
+            activation=config['activation'],
+            kernel_initializer=config['kernel_initializer'],
+            use_skip_connections=config['use_skip_connections'],
+            input_shape=config['input_shape'],
+            hidden_dims=config['hidden_dims'],
+            num_output=[4, 7],
+            final_activation=config['final_activation'],
+        )
+
+        # Re-activate the warnings
+        warnings.filterwarnings("default", category=UserWarning)
+
+    elif args.model == 'lstm_binary':
+        pass
+
+    elif args.model == 'tcn_binary':
+        pass
+
+    elif args.model == 'linear':
+        model = Linear(n_features, n_timesteps)
+
+    else:
+        raise ValueError('model unknown')
+
+    if args.verbose:
+        print(f'Configuration:\n{config}')
+        print(f'Model:\n{model}')
+
     return model
+
+
+@torch.no_grad()
+def evaluate(args, model, dataloader, device, average='micro', visualize=False):
+    """
+    Evaluate the model on accuracy, precision, recall, F1 score and multi-class
+    AUROC and AUPRC.
+    """
+
+    model.eval()
+
+    results = {}
+    y_pred_avpu, y_pred_crt = [], []
+    y_true_avpu, y_true_crt = [], []
+
+    for inputs, labels_avpu, labels_crt in dataloader:
+        inputs = inputs.float()
+        labels_avpu = labels_avpu.float()
+        labels_crt = labels_crt.float()
+
+        inputs = inputs.to(device)
+
+        # Forward
+        out_avpu, out_crt = model.forward(inputs)
+
+        y_pred_avpu.append(out_avpu)
+        y_pred_crt.append(out_crt)
+        y_true_avpu.append(labels_avpu)
+        y_true_crt.append(labels_crt)
+
+    y_pred_avpu = torch.concat(y_pred_avpu).cpu()
+    y_pred_crt = torch.concat(y_pred_crt).cpu()
+    y_true_avpu = torch.concat(y_true_avpu)
+    y_true_crt = torch.concat(y_true_crt)
+
+    results['accuracy'] = accuracy(y_pred_avpu, y_pred_crt, y_true_avpu, y_true_crt)
+    results['avpu'] = calculate_metrics(y_pred_avpu, y_true_avpu, average=average)
+    results['crt'] = calculate_metrics(y_pred_crt, y_true_crt, average=average)
+
+    # AUROC
+    auroc_avpu = calculate_auroc(y_pred_avpu, y_true_avpu, name='avpu', visualize=visualize and args.verbose)
+    auroc_crt = calculate_auroc(y_pred_crt, y_true_crt, name='crt', visualize=visualize and args.verbose)
+
+    # # AUPRC
+    auprc_avpu = calculate_auprc(y_pred_avpu, y_true_avpu, name='avpu', visualize=visualize and args.verbose)
+    auprc_crt = calculate_auprc(y_pred_crt, y_true_crt, name='crt', visualize=visualize and args.verbose)
+
+    return results
 
 
 def print_results(results):
     """
-    Print the results from the evaluation function.
+    Print the results.
     """
     print("========================")
-    print(f" Accuracy    : {results['overall_acc'].round(4)}")
+    print(f" Accuracy    : {results['accuracy'].round(4)}")
     print(f" AVPU:")
     print(f" - accuracy  : {results['avpu'][0].round(4)}")
     print(f" - precision : {results['avpu'][1].round(4)}")
@@ -76,271 +244,203 @@ def print_results(results):
     print("========================\n")
 
 
-def evaluate(model, dataloader, device):
+def train(args, model, dataloaders, device, loss_weights=None):
     """
-    Calculate the accuracy, precision and recall of the model.
-    """
-
-    model.eval()
-
-    predictions = []
-    labels = []
-
-    with torch.no_grad():
-        for i, (X, y) in enumerate(dataloader):
-
-            # if i > 2:
-            #     break
-
-            X = X.float().to(device)
-            y = y.float().to(device)
-        
-            predictions.append(model.forward(X))
-            labels.append(y)
-
-
-    predictions = torch.concat(predictions).cpu().round() # Turn probability to binary
-    labels = torch.concat(labels).cpu()
-
-    results = {'overall_acc' : accuracy_score(labels.flatten(), predictions.flatten()).round(4)}
-
-    # Metrics
-    for i, outcome in enumerate(['avpu', 'crt']):
-        accuracy = accuracy_score(labels[:, i], predictions[:, i])
-        precision = precision_score(labels[:, i], predictions[:, i], zero_division=0.0)
-        recall = recall_score(labels[:, i], predictions[:, i], zero_division=0.0)
-        f1 = f1_score(labels[:, i], predictions[:, i], zero_division=0.0)
-        # matrix = confusion_matrix(labels[:, outcome], predictions[:, outcome])
-
-        results[outcome] = [accuracy, precision, recall, f1]
-    
-    return results
-
-
-def mask_missing_values(X, masking_value):
-    """
-    Replace the missing values (-999) with a masking value.
+    Main training function.
     """
 
-    X = torch.where(X == -1, masking_value, X)
-    return X
+    train_loader, val_loader, test_loader = dataloaders[0], dataloaders[1], dataloaders[2]
 
+    model = model.to(device)
+    loss_fn_avpu = nn.CrossEntropyLoss(weight=loss_weights[0]).to(device)
+    loss_fn_crt = nn.CrossEntropyLoss(weight=loss_weights[1]).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), args.lr)
+    # scheduler = StepLR(optimizer, step_size=15, gamma=0.5) # Best so far
 
-def labels_to_binary(y):
-    """
-    Turn the output labels to binary differentiating between normal and abnormal
-    values (AVPU > 1, CRT > 3).
-    """
-    if isinstance(y, np.ndarray):
-        y[:, 0] = np.where(y[:, 0] > 1, 1, 0) # 0 = normal; 1 = abnormal
-        y[:, 1] = np.where(y[:, 1] > 3, 1, 0) # 0 = normal; 1 = abnormal
-    else:
-        y[:, 0] = torch.where(y[:, 0] > 1, 1, 0) # 0 = normal; 1 = abnormal
-        y[:, 1] = torch.where(y[:, 1] > 3, 1, 0) # 0 = normal; 1 = abnormal
-    return y
-
-
-def train(args):
-    """
-    Training function for the model.
-
-    TODO:
-    - Add lr scheduler and early stop
-    """
-
-    # As to avoid deprecation warning from pytorch_tcn TCN
-    warnings.filterwarnings("ignore", category=UserWarning)
-
-    # Seed functions
-    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-    print(device)
-    set_seed(args.seed)
-
-    # Initialize dataloaders
-    file_path = f"{os.getcwd()}/{args.data_dir}"
-    dataset = IMPALA_Dataset(file_path)
-    dataset.y = labels_to_binary(dataset.y) # Convert dataset to binary
-
-    # Balance the dataset
-    avpu_1, crt_1 = [], []
-    for i, d in enumerate(dataset):
-        if d[1][0] == 1:
-            avpu_1.append(i)
-        if d[1][1] == 1:
-            crt_1.append(i)
-
-    avpu_0 = list(np.random.choice([i for i in range(len(dataset)) if i not in avpu_1], len(avpu_1), replace=False))
-    crt_0 = list(np.random.choice([i for i in range(len(dataset)) if i not in crt_1], len(crt_1), replace=False))
-
-    dataset.X = dataset.X[list(set(avpu_0 + avpu_1 + crt_1 + crt_0))]
-    dataset.y = dataset.y[list(set(avpu_0 + avpu_1 + crt_1 + crt_0))]
-
-    train_loader, val_loader, test_loader = \
-        create_dataloaders(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
-
-    # Initialize model, loss function, optimizer, etc.
-    input_shape, output_shape = dataset[0][0].shape, dataset[0][1].shape
-    model = load_model(args, input_shape[0], input_shape[1],
-                       output_shape[0]).to(device)
-    loss_fn = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.Adagrad(model.parameters(), args.lr)
-    # optimizer = torch.optim.Adam(model.parameters(), args.lr)
-
-    # Save statistics
     best_model = None
-    best_epoch = 0
-    model_results = {
-        'val_acc' : [],
-        'train_loss' : [],
-        'avpu' : [],
-        'crt' : []
+    results = {
+        'train_loss': [],
+        'val_acc': [],
+        'avpu': [],
+        'crt': [],
+        'test': [],
+        'best_epoch': []
     }
 
-    ### Training ###
     for e in range(args.epochs):
-        print(f"Starting epoch {e}")
+        print(f'\nStarting epoch {e}')
         epoch_loss = 0
         model.train()
 
-        for i, (X, y) in enumerate(tqdm(train_loader)):
-            X = X.float().to(device)
-            y = y.float().to(device)
+        for inputs, labels_avpu, labels_crt in tqdm(train_loader):
+            inputs = inputs.float()
+            labels_avpu = labels_avpu.float()
+            labels_crt = labels_crt.float()
 
-            # Calculate output
+            inputs = inputs.to(device)
+            labels_avpu = labels_avpu.to(device)
+            labels_crt = labels_crt.to(device)
+
+            # Forward
             optimizer.zero_grad()
-            output = model.forward(X)
-            loss = loss_fn(output, y)
+            out_avpu, out_crt = model.forward(inputs)
+            loss_avpu = loss_fn_avpu(out_avpu, labels_avpu)
+            loss_crt = loss_fn_crt(out_crt, labels_crt)
 
-            # Compute gradient
-            loss.backward()
+            # Backpropagation
+            loss_avpu.backward(retain_graph=True)
+            loss_crt.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            epoch_loss += loss.item()
 
-            # if i == 0:
-            #     print(y, torch.round(output, decimals=2))
+            # print(loss_avpu.item(), loss_crt.item())
+            epoch_loss += (loss_avpu.item() + loss_crt.item())
 
+        # if e < 16:
+        #     scheduler.step()
 
-        model_results['train_loss'].append(epoch_loss/len(train_loader))
+        # Validation
+        val_results = evaluate(args, model, val_loader, device,
+                               average='weighted', visualize=False)
+        if args.verbose:
+            print("\n== Validation results ==")
+            print_results(val_results)
 
-        # Evaluation
-        results = evaluate(model, val_loader, device)
-        if args.verbosity:
-            print("\nEvaluating model...")
-            print_results(results)
-        model_results['val_acc'].append(results['overall_acc'])
-        model_results['avpu'].append(results['avpu'])
-        model_results['crt'].append(results['crt'])
-        
-        # Save best model
-        if not best_model or results['overall_acc'] >= max(model_results['val_acc']):
-            # print(f"Better model found at epoch {e}")
+        results['train_loss'].append(epoch_loss)
+        results['val_acc'].append(val_results['accuracy'])
+        results['avpu'].append(val_results['avpu'])
+        results['crt'].append(val_results['crt'])
+
+        if not best_model or val_results['accuracy'] >= max(results['val_acc']):
             best_model = deepcopy(model)
-            best_epoch = e
+            results['best_epoch'] = e
 
-    ### Testing ###
-    print("\nTesting model...")
-    results = evaluate(best_model, test_loader, device)
-    print_results(results)
-    model_results['test'] = results
+    # for name, param in model.state_dict().items():
+    #     with open(f'{name}.npy', 'wb') as f:
+    #         np.save(f, param.cpu().numpy())
 
-    # Save best model and model results
-    if args.save_model:
-        model_path = f"{os.getcwd()}/{args.results_dir}"
-        model_name = f"{args.model_name}_s{args.seed}_lr{args.lr}_bs{args.batch_size}_e{args.epochs}"
-        torch.save(model.state_dict(), f"{model_path}saved_models/{model_name}.pt")
-        with open(f"{model_path}stats_models/{model_name}.pkl", "wb") as file:
-            pickle.dump(model_results, file)
+    # Test
+    results['test'] = evaluate(args, best_model, test_loader, device,
+                               average='weighted', visualize=True)
+    if args.verbose:
+        print("\n===== Test results =====")
+        print_results(results['test'])
 
-    return best_model, best_epoch, model_results
+    # TODO: Save model and results
+
+    return best_model, results
 
 
-def plot_results(results, best_epoch):
-    """
-    Create plots of the results from training.
-    """
-
-    # Training loss and validation accuracy
+def plot_results(results):
+    # Training loss
     L = len(results['val_acc'])
     plt.subplot(2, 2, 1)
     plt.plot(range(L), results['train_loss'])
-    plt.ylabel("Training loss")
-    plt.xlabel("Epochs")
-    plt.title("Training loss")
-    plt.tight_layout()
+    plt.ylabel('Training loss')
+    plt.xlabel('Epochs')
+    plt.title('Training loss')
 
+    # Validation accuracy
     plt.subplot(2, 2, 2)
     plt.plot(range(L), np.array(results['val_acc'])*100)
-    plt.axhline(results['test']['overall_acc']*100, color='red')
-    plt.scatter(best_epoch, results['test']['overall_acc']*100, color='red', marker='x')
-    plt.ylabel("Accuracy (%)")
-    plt.xlabel("Epochs")
+    plt.axhline(results['test']['accuracy']*100, color='red', linestyle='--')
+    plt.scatter(results['best_epoch'], results['test']['accuracy']*100, color='red', marker='x')
+    plt.ylim(-5, 105)
+    plt.ylabel('Accuracy (%)')
+    plt.xlabel('Epochs')
     plt.legend(['Validation', 'Test at best epoch'])
-    plt.title("Validation accuracy")
-    plt.tight_layout()
+    plt.title('Validation accuracy')
 
-    # Precision, recall and F1 score for AVPU and CRT
+    # Metrics during validation
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+    # AVPU
     plt.subplot(2, 2, 3)
     plt.plot(np.array(results['avpu']))
-    plt.legend(['Accuracy', 'Precision', 'Recall', 'F1 score'])
-    plt.xlabel("Epochs")
-    plt.ylabel("Metric score")
-    plt.title('AVPU')
-    plt.tight_layout()
+    for i, metric in enumerate(results['test']['avpu']):
+        plt.scatter(results['best_epoch'], metric, color=colors[i], marker='x')
+    plt.legend(['Accuracy', 'Precision', 'Recall', 'F1 score'], framealpha=0.5)
+    plt.ylim(-0.05, 1.05)
+    plt.ylabel('Score')
+    plt.xlabel('Epochs')
+    plt.title('Validation metrics for AVPU')
 
+    # CRT
     plt.subplot(2, 2, 4)
     plt.plot(np.array(results['crt']))
-    plt.legend(['Accuracy', 'Precision', 'Recall', 'F1 score'])
-    plt.xlabel("Epochs")
-    plt.ylabel("Metric score")
-    plt.title('CRT')
-    plt.tight_layout()
+    for i, metric in enumerate(results['test']['crt']):
+        plt.scatter(results['best_epoch'], metric, color=colors[i], marker='x')
+    plt.legend(['Accuracy', 'Precision', 'Recall', 'F1 score'], framealpha=0.5)
+    plt.ylim(-0.05, 1.05)
+    plt.ylabel('Score')
+    plt.xlabel('Epochs')
+    plt.title('Validation metrics for CRT')
 
+    plt.tight_layout()
     plt.show()
 
 
 def main(args):
-    """
-    Main function. Takes care of training the model, loading saved models,
-    saving trained models.
-    TODO:
-    - Create if-statement to load a saved model.
-    - Run model on different seeds.
-    """
 
-    model, best_epoch, results = train(args)
+    device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
+    print(device)
 
-    # model.load_state_dict(torch.load(checkpoint_name))
+    # Set seed
+    set_seed(args.seed)
 
-    if args.verbosity:
-        plot_results(results, best_epoch)
+    # Load dataset
+    dataloaders, n_features, n_timesteps, loss_weights = load_data(args)
+
+    # Load model
+    model = load_model(args, n_features, n_timesteps)
+
+    # Train model
+    model, results = train(args, model, dataloaders, device, loss_weights)
+
+    # Plot results
+    plot_results(results)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-s", "--seed", action='store', default=42,
-                        type=int, help="seed")
-    parser.add_argument("--lr", action='store', default=1e-3,
-                        type=float, help="learning rate of the optimizer")
-    parser.add_argument("--batch_size", action='store', default=32,
-                        type=int, help="Batch size for the dataloaders")
-    parser.add_argument("-e", "--epochs", action='store', default=50,
-                        type=int, help="Max number of epochs")
-    parser.add_argument("--data_dir", action='store', required=True, type=str,
-                        help="Directory where data is stored")
-    parser.add_argument("--results_dir", action='store', required=True, type=str,
-                        help="Directory to store best model")
-    parser.add_argument("--model_name", action='store', required=True, type=str,
-                        help="Name of the best model")
-    parser.add_argument("--verbosity", action="store_true",
-                        help="print extra information")
-    parser.add_argument("--save_model", action="store_true",
-                        help="save the model and its results")
+    parser.add_argument('--data_path', action='store', type=str, required=True,
+                        help="path to dataset file (from current directory)")
+    parser.add_argument('--results_dir', action='store', type=str,
+                        help="path to results directory (from current directory)")
+    parser.add_argument('--save_model', action='store_true',
+                        help="save the best model and results")
+    parser.add_argument('--verbose', action='store_true',
+                        help="show model information and results")
+
+    # Data augmentation
+    parser.add_argument('--binary', action='store_true',
+                        help='turn the training labels to binary')
+
+    # Model configuration
+    parser.add_argument('--model', action='store', type=str, required=True,
+                        help='model that needs to be trained')
+    parser.add_argument('--config_file', action='store', type=str, required=True,
+                        help="configuration file for the model's hyperparameters")
+
+    # Training hyperparameters
+    parser.add_argument('-s', '--seed', action='store', default=42, type=int,
+                        help="seed for reproducibility")
+    parser.add_argument('--lr', action='store', default=1e-4, type=float,
+                        help="learning rate for optimizer")
+    parser.add_argument('--batch_size', action='store', default=16, type=int,
+                        help="batch size for training")
+    parser.add_argument('-e', '--epochs', action='store', default=30, type=int,
+                        help="number of training epochs")
 
     args = parser.parse_args()
 
-    assert os.path.isfile(args.data_dir+"_input"), "Input file does not exist"
-    assert os.path.isfile(args.data_dir+"_labels"), "Labels file does not exist"
-    assert os.path.isdir(args.results_dir), "Results directory does not exist"
+    # Check if paths are valid
+    assert os.path.isfile(os.getcwd() + args.data_path), 'dataset file not found'
+    assert (args.save_model and args.results_dir) or (not args.save_model and not args.results_dir), \
+        'save_model and results_dir must be both active or inactive'
+
+    if args.results_dir:
+        assert os.path.isdir(f'{args.results_dir}/model_stats'), 'model stats dir not found'
+        assert os.path.isdir(f'{args.results_dir}/saved_models'), 'saved models dir not found'
 
     main(args)
