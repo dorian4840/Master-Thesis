@@ -6,6 +6,5 @@ __pycache__/
 # Data folders
 DATA/
 RESULTS/
-Experiments/
-models/saved_models/
-models/stats_models/
+experiments/
+job_scripts/

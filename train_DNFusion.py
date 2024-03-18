@@ -10,13 +10,12 @@ import pickle
 import torch
 from torch import nn
 
-from datasets import create_dataloaders
-from models.lstm import LSTM
-from models.tcn import TCN
-from models.linear import Linear
+from datasets_combined import create_dataloaders
 from metrics import *
+from models.DNFusion import DNFusion
 
 MISSING = -1
+AMPLIFIER = 100
 
 
 def set_seed(seed):
@@ -40,9 +39,13 @@ def data_augmentations(data):
     for patient_id, patient_data in data.items():
 
         # Augment input
-        X = patient_data['X']
+        X = patient_data['clinical_X']
         X = np.where(np.isnan(X), -1, X)
-        data[patient_id]['X'] = X
+        data[patient_id]['clinical_X'] = X
+
+        X = patient_data['vital_X']
+        X = np.where(np.isnan(X), -1, X)
+        data[patient_id]['vital_X'] = X
 
         # Augment output
         y = patient_data['y']
@@ -88,6 +91,8 @@ def calculate_loss_weights(args, data):
         max_crt = max(weights_crt)
         weights_crt = max_crt / weights_crt
         weights_crt[weights_crt == np.inf] = np.mean([w for w in weights_crt if w < 10000])
+    
+    print(weights_avpu, weights_crt)
 
     return torch.Tensor(weights_avpu), torch.Tensor(weights_crt)
 
@@ -102,8 +107,10 @@ def load_data(args, data_split=[0.7, 0.1, 0.2]):
 
     data = data_augmentations(data)
 
-    input_shape = data[list(data.keys())[0]]['X'].shape
-    n_features, n_timesteps = input_shape[2], input_shape[1]
+    clinical_input_shape = data[list(data.keys())[0]]['clinical_X'].shape
+    vital_input_shape = data[list(data.keys())[0]]['vital_X'].shape
+    n_features = [clinical_input_shape[2], vital_input_shape[2]]
+    n_timesteps = [clinical_input_shape[1], vital_input_shape[1]]
     loss_weights = calculate_loss_weights(args, data)
 
     return create_dataloaders(data, data_split, args.batch_size), \
@@ -112,49 +119,60 @@ def load_data(args, data_split=[0.7, 0.1, 0.2]):
 
 def load_model(args, n_features, n_timesteps):
 
-    if args.model == 'lstm':
-        model = LSTM(
-            num_input=n_features,
-            hidden_size=args.hidden_size,
-            num_layers=args.num_layers,
-            num_output=[4, 7],
-            dropout=args.lstm_dropout
-        )
+    # As to avoid deprecation warning from pytorch_tcn TCN
+    warnings.filterwarnings("ignore", category=UserWarning)
 
-    elif args.model == 'tcn':
+    dropout = 0
 
-        # As to avoid deprecation warning from pytorch_tcn TCN
-        warnings.filterwarnings("ignore", category=UserWarning)
+    model1_config = {
+        'num_inputs': n_features[0],
+        'num_timesteps': n_timesteps[0],
+        'num_channels': [400, 200, 200, 100],
+        'kernel_size': 4,
+        'dilations': [1, 2, 3, 1],
+        'dilation_reset': 3,
+        'dropout': dropout,
+        'causal': True,
+        'use_norm': 'layer_norm',
+        'activation': 'relu',
+        'kernel_initializer':'xavier_uniform'
+    }
 
-        model = TCN(
-            num_input=n_features,
-            num_timesteps=n_timesteps,
-            num_channels=args.num_channels,
-            kernel_size=args.kernel_size,
-            dilations=args.dilations,
-            dilation_reset=args.dilation_reset,
-            dropout=args.tcn_dropout,
-            causal=args.causal,
-            use_norm=args.use_norm,
-            activation=args.activation,
-            kernel_initializer=args.kernel_initializer,
-            num_output=[4, 7],
-        )
+    model2_config = {
+        'num_inputs': n_features[1],
+        'num_timesteps': n_timesteps[1],
+        'num_channels': [200, 200, 100, 100],
+        'kernel_size': 16,
+        'dilations': None,
+        'dilation_reset': None,
+        'dropout': dropout,
+        'causal': True,
+        'use_norm': 'weight_norm',
+        'activation': 'relu',
+        'kernel_initializer':'xavier_uniform'
+    }
 
-        # Re-activate the warnings
-        warnings.filterwarnings("default", category=UserWarning)
 
-    elif args.model == 'linear':
-        model = Linear(n_features,
-                       n_timesteps,
-                       args.hidden_dims,
-                       act_fn=args.act_fn,
-                       num_output=[4, 7],
-                       linear_dropout=args.linear_dropout)
-    else:
-        raise ValueError('model unknown')
+    initial_mean = ((len(model1_config['num_channels']) - 1) / 2) / AMPLIFIER
+    initial_std = 0.5 / AMPLIFIER
+    # initial_std = 2*(np.sqrt(-1/(8*np.log(0.1)))) / mask_amplifier
+    threshold = 0.1
+
+    model = DNFusion(model1_config,
+                     model2_config,
+                     num_outputs=[4, 7],
+                     mmtm_ratio=8,
+                     mask_mean=initial_mean,
+                     mask_std=initial_std,
+                     threshold=threshold,
+                     warmup=args.warmup,
+                     fusion=True)
+
+    # Re-activate the warnings
+    warnings.filterwarnings("default", category=UserWarning)
 
     if args.verbose:
+        print(f'Configuration:\n{model1_config}, {model2_config}')
         print(f'Model:\n{model}')
 
     return model
@@ -176,21 +194,23 @@ def evaluate(args, model, dataloader, device, loss_fn_avpu, loss_fn_crt,
 
     epoch_loss = []
 
-    for inputs, labels_avpu, labels_crt in dataloader:
-        inputs = inputs.float()
+    for clinical_input, vital_input, labels_avpu, labels_crt in dataloader:
+        clinical_input = clinical_input.float()
+        vital_input = vital_input.float()
         labels_avpu = labels_avpu.float()
         labels_crt = labels_crt.float()
 
-        inputs = inputs.to(device)
+        clinical_input = clinical_input.to(device)
+        vital_input = vital_input.to(device)
         labels_avpu = labels_avpu.to(device)
         labels_crt = labels_crt.to(device)
 
         # Forward
-        avpu_output, crt_output = model(inputs)
+        avpu_output, crt_output = model(clinical_input, vital_input)
         loss_avpu = loss_fn_avpu(avpu_output, labels_avpu)
         loss_crt = loss_fn_crt(crt_output, labels_crt)
 
-        batch_loss = (loss_avpu.item() + loss_crt.item()) / inputs.shape[0]
+        batch_loss = (loss_avpu.item() + loss_crt.item()) / clinical_input.shape[0]
         epoch_loss.append(batch_loss)
 
         y_pred_avpu.append(avpu_output)
@@ -219,7 +239,7 @@ def evaluate(args, model, dataloader, device, loss_fn_avpu, loss_fn_crt,
                                  average=average, visualize=visualize and args.verbose)
     auprc_crt = calculate_auprc(y_pred_crt, y_true_crt, name='crt', all_classes=False,
                                  average=average, visualize=visualize and args.verbose)
-
+    
     results['avpu'].append(auroc_avpu)
     results['crt'].append(auroc_crt)
     results['avpu'].append(auprc_avpu)
@@ -252,83 +272,89 @@ def print_results(results):
 
 
 def train(args, model, dataloaders, device, loss_weights=None):
-    """
-    Main training function.
-    """
 
     train_loader, val_loader, test_loader = dataloaders[0], dataloaders[1], dataloaders[2]
 
     model = model.to(device)
+
     loss_fn_avpu = nn.CrossEntropyLoss(weight=loss_weights[0]).to(device)
     loss_fn_crt = nn.CrossEntropyLoss(weight=loss_weights[1]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), args.lr)
 
     best_model = None
-    results = {
-        'train_loss': [],
-        'val_loss': [],
-        'test_loss': [],
-        'val_acc': [],
-        'avpu': [],
-        'crt': [],
-        'test': [],
-        'best_epoch': []
-    }
+    results = {'train_loss': [], 'val_loss': [], 'test_loss': [], 'val_acc': [],
+               'avpu': [], 'crt': [], 'test': [], 'best_epoch': []}
+
+    # Load pre-trained MMTM module
+    if f'mmtm_pretrained_e10_s{args.seed}' in os.listdir('./models/'):
+        args.epochs -= args.warmup
+        model.mmtm.load_state_dict(torch.load(f'./models/mmtm_pretrained_e10_s{args.seed}'))
+        model.end_warmup()
+    else:
+        model.start_warmup()
+
+    float_formatter = "{:.2f}".format
+    np.set_printoptions(formatter={'float_kind':float_formatter})
+    torch.autograd.set_detect_anomaly(True)
 
     for e in range(args.epochs):
         print(f'\nStarting epoch {e}')
+        print(f"Mean: {round(model.mask.mean.item()*AMPLIFIER, 4)}\nStd : {round(model.mask.std.item()*AMPLIFIER, 4)}")
+        print(f"{[round(model.mask(i).item(), 4) for i in range(4)]}")
+
+        if model.warmup and e >= model.warmup:
+            model.end_warmup()
+            torch.save(model.mmtm.state_dict(), f'./models/mmtm_pretrained_e10_s{args.seed}')
+        
         epoch_loss = []
         model.train()
 
-        for inputs, labels_avpu, labels_crt in tqdm(train_loader):
-            inputs = inputs.float()
-            labels_avpu = labels_avpu.float()
-            labels_crt = labels_crt.float()
-
-            inputs = inputs.to(device)
-            labels_avpu = labels_avpu.to(device)
-            labels_crt = labels_crt.to(device)
+        for clinical_input, vital_input, labels_avpu, labels_crt in tqdm(train_loader):
+            clinical_input = clinical_input.float().to(device)
+            vital_input = vital_input.float().to(device)
+            labels_avpu = labels_avpu.float().to(device)
+            labels_crt = labels_crt.float().to(device)
 
             # Forward
             optimizer.zero_grad()
-            out_avpu, out_crt = model.forward(inputs)
-            loss_avpu = loss_fn_avpu(out_avpu, labels_avpu)
-            loss_crt = loss_fn_crt(out_crt, labels_crt)
+            avpu_output, crt_output = model(clinical_input, vital_input)
+            loss_avpu = loss_fn_avpu(avpu_output, labels_avpu)
+            loss_crt = loss_fn_crt(crt_output, labels_crt)
 
             # Backpropagation
             loss_avpu.backward(retain_graph=True)
             loss_crt.backward(retain_graph=True)
-
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-
             optimizer.step()
 
-            batch_loss = (loss_avpu.item() + loss_crt.item()) / inputs.shape[0]
-            epoch_loss.append(batch_loss)
+            # Average loss per element in batch
+            epoch_loss.append((loss_avpu.item() + loss_crt.item()) / clinical_input.shape[0])
 
-        epoch_loss = np.mean(epoch_loss)
 
-        # Validation
-        val_results = evaluate(args, model, val_loader, device, loss_fn_avpu, loss_fn_crt)
-        if args.verbose:
-            print(f"Training loss: {round(epoch_loss, 3)}")
-            print(f"Validation loss: {round(val_results['loss'], 3)}")
-            print("\n== Validation results ==")
-            print_results(val_results)
+        if not model.warmup:
+            epoch_loss = np.mean(epoch_loss)
 
-        results['train_loss'].append(epoch_loss)
-        results['val_loss'].append(val_results['loss'])
-        results['val_acc'].append(val_results['accuracy'])
-        results['avpu'].append(val_results['avpu'])
-        results['crt'].append(val_results['crt'])
+            # Validation
+            val_results = evaluate(args, model, val_loader, device, loss_fn_avpu, loss_fn_crt)
+            if args.verbose:
+                print(f"Training loss: {round(epoch_loss, 3)}")
+                print(f"Validation loss: {round(val_results['loss'], 3)}")
+                print("\n== Validation results ==")
+                print_results(val_results)
 
-        if not best_model or val_results['accuracy'] >= max(results['val_acc']):
-            best_model = deepcopy(model)
-            results['best_epoch'] = e
+            results['train_loss'].append(epoch_loss)
+            results['val_loss'].append(val_results['loss'])
+            results['val_acc'].append(val_results['accuracy'])
+            results['avpu'].append(val_results['avpu'])
+            results['crt'].append(val_results['crt'])
+
+            if not best_model or val_results['accuracy'] >= max(results['val_acc']):
+                best_model = deepcopy(model)
+                results['best_epoch'] = e
+
 
     # Test
     test_results = evaluate(args, best_model, test_loader, device, loss_fn_avpu,
-                            loss_fn_crt, average='macro', visualize=True)
+                            loss_fn_crt, average='macro', visualize=False)
 
     results['test'] = test_results
     results['test_loss'] = test_results['loss']
@@ -338,10 +364,13 @@ def train(args, model, dataloaders, device, loss_weights=None):
         print("\n===== Test results =====")
         print_results(results['test'])
 
+    print(f"Mean: {round(model.mask.mean.item()*100, 4)}\nStd : {round(model.mask.std.item()*100, 4)}")
+    print(f"Mask: {[round(model.mask(i).item(), 4) for i in range(4)]}")
+
     return best_model, results
 
-
 def plot_results(results):
+
     # Training loss
     L = len(results['val_acc'])
     plt.subplot(2, 2, 1)
@@ -370,7 +399,8 @@ def plot_results(results):
     plt.subplot(2, 2, 3)
     plt.plot(np.array(results['avpu'])[:, :4])
     for i, metric in enumerate(results['test']['avpu'][:4]):
-        plt.scatter(results['best_epoch'], metric, color=colors[i], marker='x')
+        if metric != 'loss':
+            plt.scatter(results['best_epoch'], metric, color=colors[i], marker='x')
     plt.legend(['Accuracy', 'Precision', 'Recall', 'F1 score'], framealpha=0.5)
     plt.ylim(-0.05, 1.05)
     plt.ylabel('Score')
@@ -381,7 +411,8 @@ def plot_results(results):
     plt.subplot(2, 2, 4)
     plt.plot(np.array(results['crt'])[:, :4])
     for i, metric in enumerate(results['test']['crt'][:4]):
-        plt.scatter(results['best_epoch'], metric, color=colors[i], marker='x')
+        if metric != 'loss':
+            plt.scatter(results['best_epoch'], metric, color=colors[i], marker='x')
     plt.legend(['Accuracy', 'Precision', 'Recall', 'F1 score'], framealpha=0.5)
     plt.ylim(-0.05, 1.05)
     plt.ylabel('Score')
@@ -422,57 +453,19 @@ if __name__ == '__main__':
     parser.add_argument('--verbose', action='store_true',
                         help="show model information and results")
 
-    # Model configurations
-    parser.add_argument('--model', action='store', type=str, required=True,
-                        help='model that needs to be trained')
-
-    # TCN configurations
-    parser.add_argument('--num_channels', nargs='+', type=int, default=[200,200,100,100],
-                        help="model configuration for the TCN")
-    parser.add_argument('--kernel_size', action='store', default=16, type=int,
-                        help="model configuration for the TCN")
-    parser.add_argument('--dilations', nargs='+', type=int, default=None,
-                        help="model configuration for the TCN")
-    parser.add_argument('--dilation_reset', action='store', default=None, type=int,
-                        help="model configuration for the TCN")
-    parser.add_argument('--tcn_dropout', action='store', default=0, type=float,
-                        help="model configuration for the TCN")
-    parser.add_argument('--causal', action='store', default=True, type=bool,
-                        help="model configuration for the TCN")
-    parser.add_argument('--use_norm', action='store', default='layer_norm', type=str,
-                        help="model configuration for the TCN")
-    parser.add_argument('--activation', action='store', default='relu', type=str,
-                        help="model configuration for the TCN")
-    parser.add_argument('--kernel_initializer', action='store', default='xavier_uniform',
-                        type=str, help="model configuration for the TCN")
-
-    # LSTM configurations
-    parser.add_argument('--num_layers', action='store', default=4, type=int,
-                        help="model configuration for the LSTM")
-    parser.add_argument('--hidden_size', action='store', default=512, type=int,
-                        help="model configuration for the LSTM")
-    parser.add_argument('--lstm_dropout', action='store', default=0, type=float,
-                        help="model configuration for the LSTM")
-    
-    # Linear configuration
-    parser.add_argument('--hidden_dims', nargs='+', type=int, default=[400,200,200,100],
-                        help="model configuration for the linear model")
-    parser.add_argument('--act_fn', action='store', default='relu', type=str,
-                        help="model configuration for the linear model")
-    parser.add_argument('--linear_dropout', action='store', default=0, type=float,
-                        help="model configuration for the linear model")
-    
-
     # Training hyperparameters
     parser.add_argument('-s', '--seed', action='store', default=42, type=int,
                         help="seed for reproducibility")
     parser.add_argument('--lr', action='store', default=1e-4, type=float,
                         help="learning rate for optimizer")
-    parser.add_argument('--batch_size', action='store', default=16, type=int,
+    parser.add_argument('--batch_size', action='store', default=64, type=int,
                         help="batch size for training")
-    parser.add_argument('-e', '--epochs', action='store', default=30, type=int,
-                        help="number of training epochs")
+    parser.add_argument('-e', '--epochs', action='store', default=25, type=int,
+                        help="number of training epochs (this includes warmup epochs)")
+    parser.add_argument('--warmup', action='store', default=10, type=int,
+                        help="number of epochs the fusion module will warmup/train")
 
     args = parser.parse_args()
 
     main(args)
+

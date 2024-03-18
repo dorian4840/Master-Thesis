@@ -129,7 +129,7 @@ def sliding_window(args, data: np.ndarray, output: pd.DataFrame, datetimes: list
     :param args.output_deviation: Maximum difference between end of the window and output time. 
     """
 
-    X, y = [], []
+    X, y, time = [], [], []
     datetimes = pd.Series(datetimes, name='time')
 
     if args.overlap < 1:
@@ -160,11 +160,13 @@ def sliding_window(args, data: np.ndarray, output: pd.DataFrame, datetimes: list
         if nearest_i is not None:
             X.append(window)
             y.append(output.iloc[nearest_i].values)
+            time.append(end)
     
     X = np.array(X)
     y = np.array(y)
+    time = np.array(time)
 
-    return X, y
+    return X, y, time
 
 
 def preprocessing(args):
@@ -181,28 +183,30 @@ def preprocessing(args):
                  'B-S-0173', 'B-S-0186', 'B-S-0190', 'B-S-0285', 'B-S-0291',
                  'B-S-0297', 'B-S-0299', 'Z-H-0103']
 
-    file_path = os.getcwd() + args.data_dir
     if args.test:
-        data = load_patient_dict(file_path)
+        data = load_patient_dict(args.data_dir)
     else:
-        data = read_raw_vital_signs(file_path)
+        data = read_raw_vital_signs(args.data_dir)
 
     output_dict = preprocess_crt_avpu(os.getcwd() + CLINICAL_DATA_PATH)
     age_dict = get_age(os.getcwd() + CLINICAL_DATA_PATH)
 
     patient_data = {}
-
+    i = 0
     for patient_id, df in data.items():
-
+        print(patient_id)
         if patient_id in withdrew_consent:
+            print(f'Patient {patient_id} withdrew consent')
             continue
 
         if patient_id not in age_dict or patient_id not in output_dict:
+            i += 1
             print(f'Patient {patient_id} not found in age or output data')
             continue
 
         if df.empty:
-            print(f'Patient {patient_id} has not vital sign data')
+            i += 1
+            print(f'Patient {patient_id} has no vital sign data')
             continue
 
         # Split data into 15 minute windows
@@ -222,16 +226,23 @@ def preprocessing(args):
             new_data = normalize(new_data)
 
         # Sliding window
-        X, y = sliding_window(args, new_data, output_dict[patient_id], datetimes)
+        X, y, time = sliding_window(args, new_data, output_dict[patient_id], datetimes)
         
-        patient_data[patient_id] = {'X' : X, 'y' : y}
+        if X.shape[0] == 0:
+            i += 1
+            continue
 
+        patient_data[patient_id] = {'X' : X, 'y' : y, 't': time}
+
+    print(f'{i} patients discarded due to insufficient amounts of data')
     
     if args.verbose:
         n_patients = len(patient_data)
         n_samples = sum([a["y"].shape[0] for a in patient_data.values()])
-        sample_length = X.shape[1]
-        n_features = X.shape[-1]
+        for p in patient_data.values():
+            sample_length = p['X'].shape[1]
+            n_features = p['X'].shape[-1]
+            break
 
         missing = np.zeros(n_features)
         for d in patient_data.values():
@@ -260,6 +271,8 @@ def preprocessing(args):
 
 def main(args):
 
+    warnings.filterwarnings("ignore")
+
     data = preprocessing(args)
 
     if args.results_dir:
@@ -270,7 +283,8 @@ def main(args):
 
         filename += '.pkl'
 
-        with open(os.getcwd() + args.results_dir + filename, 'wb') as f:
+        print(filename)
+        with open(args.results_dir + filename, 'wb') as f:
             pickle.dump(data, f)
     
     return data
@@ -278,6 +292,7 @@ def main(args):
 
 if __name__ == "__main__":
 
+    print('Start running...')
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--verbose', action='store_true',

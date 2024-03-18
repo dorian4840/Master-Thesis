@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from torchmetrics import AveragePrecision
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, \
                             RocCurveDisplay, auc, roc_curve, precision_recall_curve, \
@@ -192,7 +191,7 @@ def calculate_auprc(y_pred, y_true, name, average='macro', all_classes=True, vis
             ).plot(ax=ax, alpha=0.3, linestyle='--',)
 
         plt.axhline(1/n_classes, linestyle='--', color='black',
-                    label=f'Chance level (AP = {1/n_classes})', alpha=0.5)
+                    label=f'Chance level (AP = {round(1/n_classes, 2)})', alpha=0.5)
 
         actual_auprc = round(np.mean([v for k, v in ap.items() if k in valid_class]), 2)
 

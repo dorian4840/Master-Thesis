@@ -46,48 +46,15 @@ def clean_data(data: pd.DataFrame, remove_outputs: bool = True) -> pd.DataFrame:
                        'recru_skinch_pinch', 'recru_skin_pinch_result']
         
         # Clinical analysis 1
-        remove_cols_3 = ['dly_new_sepsis', 'dly_weak_rad_pulse', 'recru_convulsions',
+        remove_cols_3 = ['dly_weak_rad_pulse', 'recru_convulsions',
                         'recru_convulsions_days', 'recru_drowsiness',
-                        'recru_drowsiness_days', 'recru_not_drinking',
-                        'recru_not_drinking_days', 'recru_not_eating',
-                        'recru_not_eating_dys', 'recru_cough', 'recru_cough_num']
-        
-        # Clinical analysis 2
-        remove_cols_4 = ['recru_diagnosis', 'recru_neuro', 'recru_circu',
-                        'recru_admission_problem', 'recru_parasitic_malaria',
-                        'recru_medication_specfy___9', 'recru_type_cie_2',
-                        'recru_medication_specfy___19', 'recru_age_months',
-                        'recru_blood_glucose', 'recru_malariardt',
-                        'recru_blood_glucose_yn', 'recru_blood_glucose_format',
-                        'recru_diagnosis_2', 'dly_condition_acc_nurse',
-                        'dly_condition_acc_guardian', 'recru_num_potential_critic',
-                        'recru_weight_kg']
+                        'recru_drowsiness_days', 'recru_diagnosis',
+                        'recru_type_cie_2', 'recru_neuro',
+                        'recru_admission_problem', 'recru_not_drinking',
+                        'recru_not_drinking_days',]
 
-        # Gradient analysis 1 (TCN)
-        remove_cols_5 = ['recru_mother_employment', 'recru_father_employment',
-                        'recru_num_of_diagnoses', 'recru_num_of_diagnosis',
-                        'recru_lower_respiratory_tract', 'dly_monitor_attachd',
-                        'recru_length_available', 'recru_dehydrated',
-                        'recru_medication_specfy___46', 'recru_medication_specfy___56',
-                        'recru_medication_specfy___77', 'recru_other_treat',
-                        'dly_temp_available', 'dly_weight_taken', 'recru_difficult_in_b_v_3',
-                        'recru_fever_days', 'recru_oxygen_saturation', 'recru_pcv',
-                        'dly_temp', 'recru_admitted_from', 'recru_father_health',
-                        'recru_saturation_type', 'recru_respiratory_tract',
-                        'recru_admission_problem_1', 'recru_jaundice',
-                        'recru_poisoning_intoxication', 'recru_crackels',
-                        'recru_medication_specfy___65', 'recru_medication_specfy___66',
-                        'recru_medication_specfy___70', 'dly_bloodglucose']
-
-        # Gradient analysis 2 (linear model)
-        remove_cols_6 = ['recru_medication_specfy___14', 'recru_weak_radial_pulse', 'recru_father_age_in_years', 'recru_admission_problem_2', 'recru_hb', 'recru_medication_specfy___33', 'recru_other', 'dly_condition_acc_nurse', 'recru_mother_mobile_phone', 'recru_num_potential_critic', 'recru_father_employment', 'recru_edema', 'recru_medication_specfy___69', 'recru_crackels', 'recru_medication_specfy___67', 'recru_type_cie', 'recru_diagnosis', 'recru_increase_breath', 'dly_cold_periph', 'recru_mother_highest_education', 'recru_medication_specfy___1', 'recru_not_eating_dys', 'recru_medication_specfy___50', 'recru_hospital', 'recru_medication_specfy___76', 'dly_other_investigation', 'recru_medication_specfy___4', 'recru_respiratory_tract_1', 'recru_respiratory', 'recru_type_cie_2', 'recru_viral', 'recru_mother_employment', 'recru_medication_specfy___22', 'recru_iv_fluids', 'recru_stridor', 'recru_medication_specfy___70', 'recru_blood_glucose', 'recru_num_of_diagnosis', 'recru_medication_specfy___98', 'recru_bleeding', 'recru_fever_days', 'recru_sex', 'recru_lower_respiratory_tract', 'recru_neckstiffness', 'recru_malaria_micr', 'recru_parasitic_malaria', 'recru_mother_health', 'recru_blood_glucose_format', 'dly_pallor', 'recru_heart_murmur', 'recru_nitrite', 'recru_medication_specfy___19', 'recru_medication_specfy___7', 'recru_medication_specfy___51', 'recru_medication_specfy___53', 'recru_father_age_estimated', 'recru_spleen_palatable_yn', 'recru_distended_abdomen', 'recru_wheezing', 'recru_medication_specfy___30', 'recru_medication_specfy___46', 'recru_medication_specfy___71', 'dly_monitor_attachd', 'recru_chronic_condit_v_0', 'recru_miscellaneous_2', 'recru_blood_culture', 'recru_medication_specfy___75', 'dly_condition_acc_guardian', 'recru_num_of_diagnoses', 'recru_medication_specfy___11', 'recru_storage_specimen_1_2ml', 'recru_medication_specfy___65', 'recru_medication_specfy___21', 'recru_medication_specfy___18', 'recru_respiratory_rate_min', 'recru_abnormalities', 'recru_child_med_insurance', 'recru_medication_specfy___77', 'recru_platelets', 'recru_ward', 'recru_convulsions_days', 'recru_respiratory_tract', 'recru_length_available', 'recru_medication_specfy___72', 'dly_bloodglucose', 'recru_bacterial', 'recru_medication_specfy___57', 'recru_previous_admissions', 'recru_siblings_alive_num', 'recru_bld_culture_results', 'dly_new_critical1', 'dly_weight_taken', 'recru_medication_specfy___9', 'recru_trauma', 'recru_study_lactate', 'recru_blood_glucose_yn', 'recru_pallor', 'recru_diagnosis_2', 'recru_medication_specfy___34', 'recru_hdu_other', 'recru_father_highest_education', 'recru_medication_specfy___56', 'recru_diarrhoea', 'recru_malariardt', 'recru_bloodculture', 'recru_medication_specfy___40', 'recru_unclear', 'recru_hiv_status', 'recru_father_health', 'recru_pallor_history', 'recru_convulsions', 'recru_medication_specfy___78', 'recru_admission_problem', 'recru_medication_specfy___54', 'recru_leukocytes', 'recru_medication_specfy___29', 'recru_medication_specfy___64', 'recru_father_mobile_phone', 'dly_wob', 'recru_blood_culture_yn', 'recru_admission_problem_1', 'recru_medication_specfy___32', 'recru_medication_specfy___49', 'recru_medication_specfy___66', 'recru_medication_specfy___12', 'recru_grunting', 'recru_medication_specfy___68', 'recru_neuro', 'recru_admitted_from', 'recru_urine_2_10ml', 'recru_wbc']
-        
-        
         data = data.drop(remove_cols_2, axis=1)
-        # data = data.drop(remove_cols_3, axis=1)
-        # data = data.drop(remove_cols_4, axis=1)
-        # data = data.drop(remove_cols_5, axis=1)
-        data = data.drop(remove_cols_6, axis=1)
+        data = data.drop(remove_cols_3, axis=1)
 
     return data
 
@@ -274,7 +241,7 @@ def sliding_window(args, data: np.ndarray, datetimes: pd.Series, output: pd.Data
     :param args.window_hours: Desired length of the sliding windows in hours.
     """
 
-    X, y = [], []
+    X, y, time = [], [], []
 
     for end in datetimes[::-1]:
 
@@ -298,17 +265,19 @@ def sliding_window(args, data: np.ndarray, datetimes: pd.Series, output: pd.Data
         if nearest_i is not None:
             X.append(window)
             y.append(output.iloc[nearest_i].values)
+            time.append(end)
 
     X = np.array(X)
     y = np.array(y)
+    time = np.array(time)
    
-    return X, y
+    return X, y, time
 
 
 def preprocessing(args):
     """
-    Preprocess the vital sign data and return a dictionary containing the vital
-    sign windows ('X') and corresponding output ('y') per patient_id (key).
+    Preprocess the clinical data and return a dictionary containing the clinical
+    data windows ('X') and corresponding output ('y') per patient_id (key).
     """
 
     file_path = os.getcwd() + args.data_dir
@@ -323,8 +292,6 @@ def preprocessing(args):
 
     # One-hot Encoding
     data['categorical'] = one_hot_encoding(data['categorical'])
-
-    # print([l for s in [v.columns.to_list() for v in data.values()] for l in s])
 
     # Normalizing data
     data['numerical'] = normalize(data['numerical'])
@@ -346,13 +313,13 @@ def preprocessing(args):
             print(f'Patient {patient_id} not found in output data')
             continue
 
-        X, y = sliding_window(args, new_data[df.index, :], df['dly_time'], output_dict[patient_id])
+        X, y, time = sliding_window(args, new_data[df.index, :], df['dly_time'], output_dict[patient_id])
 
         if X.shape[0] == 0:
             i += 1
             continue
 
-        patient_data[patient_id] = {'X': X, 'y': y}
+        patient_data[patient_id] = {'X': X, 'y': y}#, 't': time}
 
     print(f'{i} patients discarded due to insufficient amounts of data')
 
@@ -377,7 +344,7 @@ def main(args):
     data = preprocessing(args)
 
     if args.results_dir:
-        filename = f'ClinicalDataset_w{args.window_length}_d{args.deviation}.pkl'
+        filename = f'ClinicalDataset_w{args.window_length}_d{args.deviation}_t{args.threshold}.pkl'
         with open(os.getcwd() + args.results_dir + filename, 'wb') as f:
             pickle.dump(data, f)
     

@@ -9,15 +9,13 @@ class TCN(nn.Module):
     output to a desired length.
     """
 
-    def __init__(self, name, num_input, num_timesteps, num_channels, kernel_size,
+    def __init__(self, num_input, num_timesteps, num_channels, kernel_size,
                  dilations=None, dilation_reset=None, dropout=0, causal=False,
                  use_norm='weight_norm', activation='relu', kernel_initializer='xavier_uniform',
-                 use_skip_connections=False, input_shape='NCL', hidden_dims=[],
-                 num_output=[4, 7], final_activation='sigmoid'):
+                 use_skip_connections=False, input_shape='NLC', num_output=[4, 7]):
 
-        super(TCN, self).__init__()
+        super().__init__()
 
-        self.name = name
         self.layers = []
 
         # TCN model
@@ -40,15 +38,6 @@ class TCN(nn.Module):
         self.layers.append(nn.Flatten())
         output_dims = num_channels[-1] * num_timesteps
 
-        for hidden in hidden_dims:
-            linear = nn.Linear(output_dims, hidden)
-            nn.init.xavier_uniform_(linear.weight, gain=nn.init.calculate_gain('relu'))
-            linear.bias.data.fill_(0.01) # NOTE: Gewoon gevonden online!!!
-
-            self.layers.append(linear)
-            self.layers.append(nn.ReLU())
-            output_dims = hidden
-
         # Output layer for the AVPU
         self.linearavpu = nn.Linear(output_dims, num_output[0])
         nn.init.xavier_uniform_(self.linearavpu.weight, gain=nn.init.calculate_gain('sigmoid'))
@@ -59,13 +48,7 @@ class TCN(nn.Module):
         nn.init.xavier_uniform_(self.linearcrt.weight, gain=nn.init.calculate_gain('sigmoid'))
         self.linearcrt.bias.data.fill_(0.01) # NOTE: Gewoon gevonden online!!!
 
-        if final_activation == 'sigmoid':
-            self.act_func = nn.Sigmoid()
-        elif final_activation == 'softmax':
-            self.act_func = nn.Softmax(dim=-1)
-        else:
-            raise ValueError(f'{final_activation} not a valid final activation function')
-
+        self.act_func = nn.Softmax(dim=-1)
         self.layers = nn.Sequential(*self.layers)
 
 
@@ -80,42 +63,8 @@ class TCN(nn.Module):
         out_crt = self.act_func(self.linearcrt(out))
 
         return out_avpu, out_crt
-    
+
+
     def device(self):
         """ Return the device the model is currently on. """
         return next(self.parameters()).device
-
-
-
-# model = pytcn.TCN(num_inputs=10,        # Equal to num input features
-#                   num_channels=[15, 15, 15],    # Must match number of dilations
-#                   kernel_size=2,
-#                   dilations=[1,2,3],    # If None, 2^(1...n) for residual blocks.
-#                   dilation_reset=3,     # dilation 3 is max for input length 4
-#                   dropout=0.2,
-#                   causal=False,          # Causal is important for real-time predictions
-#                   use_norm='weight_norm',
-#                   activation='relu',
-#                   kernel_initializer='xavier_uniform',
-#                   use_skip_connections=False,   # from WaveNet architecture
-#                   input_shape='NCL')    # Batch size, features, time
-    
-# def __init__(self,
-#                  name,
-#                  num_input,
-#                  num_timesteps,
-#                  num_channels,
-#                  kernel_size,
-#                  dilations=None,
-#                  dilation_reset=None,
-#                  dropout=0,
-#                  causal=False,
-#                  use_norm='weight_norm',
-#                  activation='relu',
-#                  kernel_initializer='xavier_uniform',
-#                  use_skip_connections=False,
-#                  input_shape='NCL',
-#                  hidden_dims=[500],
-#                  num_output=2,
-#                  final_activation='sigmoid',
-#                  device='cpu',):
